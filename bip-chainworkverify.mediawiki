@@ -1,0 +1,63 @@
+<pre>
+  BIP: XXX
+  Layer: Consensus (soft fork)
+  Title: OP_CHECKCHAINWORKVERIFY
+  Author: 
+  Comments-Summary: No comments yet.
+  Comments-URI: https://github.com/bitcoin/bips/wiki/Comments:BIP-XXX
+  Status: Draft
+  Type: Standards Track
+  Created: 
+  License: CC0-1.0
+</pre>
+
+==Abstract==
+
+This BIP describes a new opcode (OP_CHECKCHAINWORKVERIFY) for the Bitcoin scripting system that allows
+a transaction output to be made unspendable until an expected number of hashes in the chain has been
+reached.
+
+== Motivation ==
+
+
+=== Trustless Hashrate Bet ===
+
+    IF
+    	<chainWork + 3 months of hashes> CHECKCHAINWORKVERIFY DROP
+    	<Alice's pubkey> CHECKSIGVERIFY
+    ELSE
+    	<now + 3 months> CHECKLOCKTIMEVERIFY DROP
+    	<Bob's pubkey> CHECKSIGVERIFY
+    ENDIF
+
+== Specification ==
+
+CHECKCHAINWORKVERIFY redefines the existing NOP4 opcode. When executed, if any of the following conditions
+are true, the script interpreter will terminate with an error :
+* the stack is empty; or
+* the top item on the stack is less than 0; or
+* the witness annex nChainWork field is empty; or
+* the chainwork type of the top stack item and the witness annex nChainWork field are not the same; or
+* the top stack item is greater than the transaction's nChainWork field
+
+Otherwise, script execution will continue as if a NOP had been executed.
+
+The nChainWork annex field in a transaction prevents the transaction from being mined until a 
+total amount of work as been reached in the chain up to the block for which the spending
+transaction is candidate for inclusion. By comparing the argument to CHECKCHAINWORKVERIFY against the
+witness annex nChainWork field, we indirectly verify that the desired total amount of work has been
+reached. Until this total amount of work has been reached, the transaction output remains unspendable.
+
+== Rationale ==
+
+==Deployment==
+
+==Acknowledgements==
+
+==Compatibility==
+
+==References==
+
+==Copyright==
+
+This document is placed in the public domain.

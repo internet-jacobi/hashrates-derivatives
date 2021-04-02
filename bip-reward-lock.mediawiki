@@ -1,0 +1,88 @@
+<pre>
+  BIP: ZZZ
+  Layer: Consensus (soft fork)
+  Title: Reward-lock
+  Author: 
+         
+  Comments-Summary: No comments yet.
+  Comments-URI: 
+  Status: Draft
+  Type: Standards Track
+  Created: 2015-08-10
+  License: 
+</pre>
+
+
+==Abstract==
+
+This BIP proposes a new locking mechanism to restrain a transaction's eligibility for inclusion in a block.
+The endpoint used for this locking mechanism is the mining reward accumulated since genesis.
+
+==Motivation==
+
+At present, transactions can't be restrained from inclusion in a block in function of the total
+amount of reward accumulated in the chain. A new reward-based lock constraint would allow to 
+restain coin spendability until a total amount of mining reward has been reached.
+
+This primitive opens the way to many applications.
+
+===Blockspace Demand Drop Hedge===
+
+
+==Specification==
+
+=== Reward-Lock Witness Opt-in ===
+
+A transaction input signals reward-lock opt-in by committing a <code>nChainReward</code> 
+value taproot witness annex vector.
+
+Following BIP341 (key-path), a hashrate-lock witness stack has the form:
+
+     <signature> <<0x50> <reward-marker> <nChainReward>>
+
+The <code>reward-marker</code> MUST be 1-byte 0x52 value.
+
+The <code>nChainReward</code> is a 256-bit unsigned integer.
+
+=== Chain Reward Consensus-Semantic ===
+
+A block reward is defined by the following consensus code :
+
+    CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus());
+
+A mining reward at tip ''t'' is defined as the sum of ''GetBlockReward(i)'' over the range ''[0,1 ..., t]''.
+
+A new block rule is added which requires to reject a transaction with a reward-lock witness's 
+<code>nChainReward</code> strictly superior to mining reward at tip.
+
+TODO: define new consensus method CheckRewardLocks()
+
+==Rational==
+
+=== Why reward-lock endpoint is not based on per-block reward ? ===
+
+Pruned nodes do not store old blocks. Any new consensus rules forcing access to historical chain
+data wouldn't be able to be validated by such class of clients, unless they re-sync the whole
+chain and save the set of per-block reward from genesis to tip.
+
+==Deployment==
+
+This softfork is dependent on a previous one defining usage of the taproot annex.
+
+
+==Acknowledgements==
+
+TODO
+
+==Compatibility==
+
+Currently, Bitcoin clients don't tracking mining reward. Instead of forcing every Bitcoin client
+to re-sync the whole chain, mining reward is assumed to be 0 at height of this softfork activation.
+
+==References==
+
+TODO
+
+==Copyright==
+
+This document is placed in the public domain.

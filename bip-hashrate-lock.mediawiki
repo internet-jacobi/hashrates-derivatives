@@ -1,0 +1,267 @@
+<pre>
+  BIP: YYY
+  Layer: Consensus (soft fork)
+  Title: Hashrate-lock
+  Author: 
+         
+  Comments-Summary: No comments yet.
+  Comments-URI: 
+  Status: Draft
+  Type: Standards Track
+  Created: 2015-08-10
+  License: 
+</pre>
+
+
+==Abstract==
+
+This BIP proposes a new locking mechanism to restrain a transaction's eligibility for inclusion in
+a block. The endpoint used for this locking mechanism is the chain work accumulated since genesis.
+
+==Motivation==
+
+At present, transactions can't be restrained from inclusion in a block in function of the total
+amount of work accumlated in the chain. A new hashrate-based lock constraint would allow to restrain
+coin spendability until a chain work threshold is reached.
+
+This primitive opens the way to many applications.
+
+===Difficulty Drop Hedge===
+
+TODO
+
+===Difficulty Spike Hedge===
+
+TODO
+
+===Difficulty Boost Bounty===
+
+TODO
+
+==="Hashes per satoshi" Derivative===
+
+Combined with timelock and reward-lock, a transaction can assert that a total amount of work
+and a total mining reward has been reached at a given height. Amount of work might be used as
+a numerator and ming reward as a denominator to establish a "hashes per satoshi" ratio. This
+ratio might be used as an implicit strike price in a hashrate derivative.
+
+This strike price isn't directly committed in the witnessScript but selected by the signer as
+proved values of CHECKCHAINWORKVERIFY and CHECKCHAINREWARDVERIFY. 
+
+    IF
+    	<1000 blocks> CHECKLOCKTIMEVERIFY DROP
+    	<10000 hashes> CHECKCHAINWORKVERIFY DROP
+    	<100000 satoshis> CHECKCHAINREWARDVERIFY DROP
+    	<Alice's pubkey> CHECKSIGVERIFY
+    ELSE
+    	<1020 blocks> CHECKLOCKTIMEVERIFY DROP
+    	<Bob's pubkey> CHECKSIGVERIFY
+    ENDIF
+
+This example script is interpreted the following way "Starting at block 1000, if total amount of
+work has reached 10000 hashes and mining reward has reached 100000 satoshis, Alice is free to spend
+the locked coin, otherwise starting at block 1020, Bob is free to spend the locked coin"
+
+This example script establishes a binary call contract between Alice and Bob. Strike price is 10
+sat per hash, with a option range of 20 blocks.
+
+A binary call contract for the price of satoshis in hashes between two blocks can be built by
+chaining transaction the following way.
+
+We reused the example scrit above, where  <Alice's pubkey> is replaced by a 2-2 :
+
+    <Alice's pubkey> <Bob's pubkey> 2 CHECKMULTISIG
+
+This 2-2 is spent by a child transaction with a new witnessScript.
+
+    IF
+    	<2000 blocks> CHECKLOCKTIMEVERIFY DROP
+    	<20000 hashes> CHECKCHAINWORKVERIFY DROP
+    	<200000 satoshis> CHECKCHAINREWARDVERIFY DROP
+    	<Alice's pubkey> CHECKSIGVERIFY
+   ELSE
+    	<2020 block> CHECKLOCKTIMEVERIFY DROP
+    	<Bob's pubkey> CHECKSIGVERIFY
+    ENDIF
+
+This example script is interpreted the following way "Starting at block 2000, if total amount
+of work has reached 20000 hashes and mining reward has reached 20000 satoshis, Alice is free
+to spend the locked coin, otherwise starting at block 2020, Bob is free to spend the locked coin".
+
+The parent transaction initiates the "hashes per satoshi" price at 10 sat per hash, the child 
+transaction closes the "hashes per satoshi" price at 20 sat per hash. For the period block
+1000 to 2000 blocks the compound price is 15 sat per hash.
+
+Note, this binary call contract might be added a closing upper bounds in favor of Bob by adding a 
+competiting child transaction with the following script :
+
+    <2000 blocks> CHECKLOCKTIMEVERIFY DROP
+    <25000 hashes> CHECKCHAINWORKVERIFY DROP
+    <250000 satoshis> CHECKCHAINREWARDVERIFY DROP
+    <Bob's pubkey> CHECKSIGVERIFY
+
+This example script is interpreted the following way "Starting at block 2000, if total amount of
+work has reached 25000 hashes and mining reward has reached 250000 satoshis, Bob is free to spend
+the locked coin"
+
+Competiting childs might be ordered by leveraging the SIGHASH_NOINPUT softfork in a Eltoo-style
+construction. Bob's child transaction will overwrite Alice's one by spending it (TODO: explain better)
+
+TODO: a blocktime dampening option can be introduced by leveraging powswap construction
+
+==Specification==
+
+We emulate the same semantic than CHECKLOCKTIMEVERIFY where the lock constraints aren't enforced as
+part of the script validation itself. This provides 3 benefits :
+* it preserves script cache validity across reorgs
+* it allows to verify scripts validity without access to chain data beyond outpoins spent
+* it minimize the amount of work realized by the script interpreter
+
+Script cache validity across reorgs is a meaningful design principle -- a malicious miner could
+feed the network with a block maxed out with op_energy scripts and cascading reorg to DoS competing
+miners, as such gaining an advantage similar to "selfish mining".
+
+A Bitcoin lock constraint is designed around two elements :
+* a challenge value enforced by the verifier (a.k.a the validation engine)
+* a proved value submitted by the prover (a.k.a the output spender)
+
+To unlock a coin, the challenge value must be strictly inferior to the proved value.
+
+E.g timelocks's challenge value is either the block-height as tracked by a Bitcoin client or
+Unix timestamps as commited by a block. Timelock's proved value is the transaction's <code>nLocktime
+</code> field. When the timelock is height-based, <code>nLocktime</code> must be superior to chain 
+<code>nBlockHeight</code>.
+
+W.r.t to designing a hashrate-lock, a challenge value is already available in the presence of
+<code>nChainWork</code> the total amount of work tracked by a Bitcoin client to find the most-work, 
+valid chain.
+
+However, no transaction field is available to repurpose a proved value. Fortunately, Taproot
+introduces a witness extension, called the <code>annex</code> and designed to serve as such placeholder.
+We leverage this annex as a transaction's <code>nChainWork</code> placeholder.
+
+Providing value in the transaction data makes the amount of validation computation realized by
+the script interpreter minimal as there is no data to fetch from an in-memory cache/disk, nor
+CPU-cycle intensive mathematical operation.
+
+Validation operation is just a simple equality check operated at block validation, and another
+at script verification if CHECKCHAINWORKVERIFY is used.
+
+=== Hashrate-Lock Witness Opt-in ===
+
+A transaction input signals hashrate-lock opt-in by committing a nChainWork
+value taproot witness annex vector.
+
+Following BIP341 (key-path), a hashrate-lock witness stack has the form:
+
+    <signature> <<0x50> <hashrate-marker> <nChainWork>>
+
+The <code>hashrate-marker</code> MUST be 1-byte 0x51 value.
+
+The <code>nChainWork</code> is a 256-bit unsigned integer.
+
+The <code>hashrate-marker</code> serves to dissociate between multiple annex values (e.g to avoid
+interpreting a <code>nChainReward</code> as a <code>nChainWork</code> value). If a 
+<code>hashrate-marker</code> is present but the following witness element empty, the transaction
+should be rejected as invalid.
+
+To protect against malleability during tx-relay, the <code>nChainWork</code> must be part of the
+transaction hash and is committed by the signer.
+
+Note, if the spent coin witnessScript isn't encumbered by a CHECKCHAINWORKVERIFY, a signer 
+
+=== Chain Work Consensus-Semantic ===
+
+A block target is a 256-bit number present in block header, that a block hash must satisfy to
+be accepted. The measure of how difficult it is to find a block hash satisfying the target is
+called the difficulty. A satisfying block hash is a proof that enough work should been generated
+to "sign" the block.
+
+In this proposal, the expected amount of work associated to a block through a proof-of-work is
+called the ''block work''. The ''block work'' is defined by the following method, already present
+in consensus code of the referrence implementation:
+
+    arith_uint256 GetBlockProof(const CBlockIndex& block)
+    {
+        arith_uint256 bnTarget;
+        bool fNegative;
+        bool fOverflow;
+        bnTarget.SetCompact(block.nBits, &fNegative, &fOverflow);
+        if (fNegative || fOverflow || bnTarget == 0)
+            return 0;
+        // We need to compute 2**256 / (bnTarget+1), but we can't represent 2**256
+        // as it's too large for an arith_uint256. However, as 2**256 is at least as large
+        // as bnTarget+1, it is equal to ((2**256 - bnTarget - 1) / (bnTarget+1)) + 1,
+        // or ~bnTarget / (bnTarget+1) + 1.
+        return (~bnTarget / (bnTarget + 1)) + 1;
+    }
+
+When accepting a block, Bitcoin referrence client is suming up in the block work in a variable called
+`nChainWork`, in ''AddToBlockIndex()''
+
+    pindexNew->nTimeMax = (pindexNew->pprev ? std::max(pindexNew->pprev->nTimeMax, pindexNew->nTime) : pindexNew->nTime);
+    pindexNew->nChainWork = (pindexNew->pprev ? pindexNew->pprev->nChainWork : 0) + GetBlockProof(*pindexNew);
+    pindexNew->RaiseValidity(BLOCK_VALID_TREE);
+    if (pindexBestHeader == nullptr || pindexBestHeader->nChainWork < pindexNew->nChainWork)
+        pindexBestHeader = pindexNew;
+
+A new block rule is added which requires to reject a transaction with a hashrate-lock witness's <code>nChainWork</code> strictly inferior to chain present <code>nChainWork</code>.
+
+TODO: write new consensus method CheckHashrateLocks()
+
+==Rational==
+
+=== Why using the target instead of difficulty ===
+
+As a design principle, once a valid transaction is created, it should not become invalid unless
+the inputs are double-spent. This principle guarantees validity of chain of transactions across
+reorgs.
+
+This principle breaks if the difficulty is used. In case of reorgs across difficulty epochs,
+difficulty epoch N+1 might increase if reorged-to blocks of N have been mined faster than
+reorged-from blocks of N. In this context, a hashrate-locked transaction will become invalid.
+
+=== Why hashrate-lock endpoint is not based on per-block work ? ===
+
+Pruned nodes do not store old blocks. Any new consensus rules forcing access to historical chain
+data wouldn't be able to be validated by such class of clients, unless they re-sync the whole
+chain and save the set of per-block work from genesis to tip.
+
+Further, when combined with OP_CHECKCHAINWORKVERIFY, it allows to create derivative in function
+of hashrate fluctuations inside a difficulty epoch.
+
+=== Why if miner withold a hashrate-locked transaction ? ===
+
+If a hashrate-lock is used in a time-sensitive transaction enforcing a derivative contract,
+it might be witheld by a coalition of miners until a given block height. This witholding would 
+allow a colluding contract counterparty to vitiate the derivative contract at its advantage.
+
+A honest contract counterparty should be ready to overbid the miner bribing fee with an increasing 
+bumped feerate until it's rationally economical for a miner to defect the coalition and confirm
+the transaction. This is the same-risk that a Lightning justice transaction or any other time-sensitive
+transaction in a L2 protocol.
+
+==Deployment==
+
+This softfork is dependent on a previous one defining usage of the taproot annex.
+
+==Acknowledgements==
+
+TODO
+
+==Compatibility==
+
+Pruned Bitcoin client only storing recent blocks aren't hindered by this new rule as computing
+total amount of work in the chain up to the tip is already a requirement to detect the most-work
+valid chain.
+
+Bitcoin clients only verifying validity of headers are able to check this new consensus rule
+in isolation, as block target is a header field.
+
+==References==
+
+TODO
+
+==Copyright==
+
+This document is placed in the public domain.

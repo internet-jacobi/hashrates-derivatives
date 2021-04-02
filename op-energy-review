@@ -1,0 +1,158 @@
+# OP_ENERGY review 21-03-2021
+
+At this point, we focus on the opcode design, without going deep into other high-level considerations.
+
+In this write-up, we summarize all our current thoughts and previous discussions on op_energy design, highlight the issues with the existing approach. We focus on those issues which could be fixed with the design we suggest.
+
+We structure all our thoughts here and now it's up to you which direction we should take further. We are also happy to follow up on the analysis in this write-up.
+
+## Challenges with the existing OP_ENERGY
+
+We envision two big blockers in the current construction.
+
+### Issues with pre-committed time ("actualSeconds")
+
+Some of these problems are already discussed in the "Risks" section of the whitepaper, here we just summarize the most important parts and propose an analysis, which we believe helps to better focus our attention.
+
+Current OP_ENERGY relies on `actualSeconds` metric: the time it took between two blocks by looking at the timestamp. 
+
+Unfortunately, these timestamps in block headers are loosely-regulated and add another weak assumption, making the system less attractive. Let's see why.
+
+These timestamps are regulated by 2 rules.
+
+#### less than NTP + 2 hours
+
+We won't talk about tricking NTP (as a P2P-layer attack) on itself. It's probably irrelevant, although we could explore the risks in full later if needed. For now, let's assume that honest network is in sync with NTP and the "real time".
+
+Miners can manipulate this value (propose a block from the future) by making it 90 minutes late comparing to the "real time", so that it's "safe" for them: it will propagate across the network and miners will be fine to build on top of it.
+
+#### greater than median across last 11 blocks
+
+There's a median of 11 blocks, and there's "real time". "Real time" is always later than the median, because that time only moves forward. However, an attacker might choose the new block to be median+1 second instead of "real time". Assuming rest of the network follows "real time" and we have 10 minutes per block, with one block an attacker can drag the time at least 10 minutes backward.
+
+A minority coalition of miners could theoretically slow down MTP progress by always setting the `nTime` of their mined blocks to MTP+1, and thus interferes with any transactions/scripts relying on time-based timelocks. Note, blocks mined by the malicious coalition don't have to be in a row, as long as they're among the last 11 blocks.
+
+#### Outcome
+
+We would like to underscore that miner wall clocks off by one second might **interfers** op_energy scripts as the strike price is function of MTP and committed at time of coins locks. Currently, the Bitcoin protocol doesn't require second-wise time-synchronization among network nodes. And it's not a realistic assumption for a p2p protocol deployed on Internet.
+
+Current op_energy semantic isn't defined well-enough to gauge the margin of errors allowed. Is op_energy just pushing a the strike price on the stack or imply an equality operator ?
+
+Beyond accidental case of time slips, it is clear that both of these manipulations can move block time forward or backward within a certain window (90+ minutes) **at no cost**. This means that the dampening metric won't reflect the real world.
+
+The danger of these manipulations become more apparent if we consider game theory. So, the attack is free, but what's the gain?
+
+Assume Alice (can be a miner too) noticed that she loses a $100k bet with Bob, so she goes to miners to suggest altering the timestamps (in one block or in several blocks, it's interesting to study the implications when multiple blocks were tampered) to win the bet. In this case, Alice is willing to pay anything up to $100k to do this. And this can be even done as a smart-contract (with help of DLC or with help of another OP_ENERGY contract Alice enters with a miner).
+
+Generally, OP_ENERGY contracts are probably game-theoretically as secure as the blockchain (in terms of reorgs and stuff) in some function to be defined, so that's one bound. But here, the only reason for miners to not cooperate with Alice is a low reward (like, they won't bother to do it for $500). So that's pretty bad for OP_ENERGY.
+
+Also, this might even lead us to the Ethereum world with "miner-extracted value": now miners are motivated to trick OP_ENERGY contracts by making these manipulations, and they will compete to do so. 
+Not only this is bad for OP_ENERGY, but is also debatable for the health of Bitcoin: (timestamps might become meaningless at that point)
+
+Now, whether this breaks Bitcoin is a question to be explored, but it's indeed not good for OP_ENERGY.
+
+### Modularity
+
+Currently, OP_ENERGY combines three new primitives, which were not possible before: *chain revenue* computation, *chain work* computation, and division (OP_DIV is there, but currently disabled)
+
+We believe that they would be better split into three separate opcodes for each function. Then, OP_ENERGY construction would share the opcodes with other constructions, which means:
+
+1. One can imagine making use of arithmetic operations around chain revenue, not just straight-up division. For example, betting on logarithm, or rules like “100 sats/hash but only if chain work was more than XYZ”
+2. Better network effect: any time someone implements another use case of the building blocks, they half-way support OP_ENERGY.
+3. Makes it easier to analyze the protocol made of better understandable widely used building blocks (e.g., script interpreter is needed for wallets integrating these new transactions)
+4. Deployment can happen incrementally (one by one)
+5. The proposal is easier to argue for because it enables many use-cases, not just one.
+6. Consolidate development efforts around the fork
+7. Consolidate lobbying efforts with other projects
+8. Lower feerate cost of usage if only of the primitive is used instead of forcing the aggregate
+
+We are not aware of any issues with having more opcodes instead of 1. We have quite a few opcode slots available, so this won’t be an issue. Or, in other words, selling several multi-purpose opcodes is much easier than selling 1 niche-opcode. 
+
+Scarcity of opcodes slot isn't an issue anymore once bip341/bip342, as a lot of legacy opcodes are redefined with an OP_SUCCESS semantic. Those opcodes are always true until some future softforks restrain their usage.
+
+### Validation Architecture
+
+Every new Bitcoin opcode should account for cache limitations, because it’s important to allow low-resource devices to run full nodes. Let’s see how much cache OP_ENERGY would require.
+
+Bitcoin Core is provided with 4 different caches :
+
+- block tree cache, used to read/write blocks to leveldb
+- utxo set disk cache, used to read/write coins to leveldb
+- utxo set in-memory cache, used to fasten coin access during validation of spends
+- signature/script cache, used to fasten script verification
+
+Default Core cache size is 450 MiB (`nDefaultDbCache` in `src/txdb.h`). At initialization, 1/8 od the cache is allocated to block tree cache, 1/2 is allocated to utxo set disk cache, 3/8 is allocated to the utxo set in-memory cache. Default utxo set *in-memory* cache is 168.75 MB, its size is a bottleneck in block validation as a bigger cache reduce coins reads misses, which have to fallback on slow disk reads. Current utxo set size is ~4.19 GB, only ~4 % of the utxo set is kept in cache.
+
+Note that if `-txindex` or `-fitlerindex` options are enabled the default distribution is swinged to account for transaction/filter indexes caches (see "Step 7: load block chain" in `src/init.cpp`).
+
+Currently, OP_ENERGY proposes to track the 3 new fields. `chainWork`, `chainRevenue` and `MedianTimePast`. Note that MTP for each block is already accessible in the blockindex data structure (`BlockMap` in `src/validation.h`), so it's not a new burden on node. Assuming `chainWork` is a 32-bit unsigned integer, `chainRevenue` a 64-bit unsigned integer, nodes should track a supplemental 12 bytes per block.
+
+Note, `BlockMap` data isn't currently accessible by the script interpreter. AFAICT, such access could be introduced, but it would requires some non-trivial refactoring in one of the most-critical path of the codebase. Another altnerative would be to introduce a new cache, similar to the signature/script cache one, but it would require a 256-bit unsigned integer per-block entry. A third alternative would be to have op_energy witnessScript announcing the blocks metadata used for their validation in the taproot annex (see BIP341).
+
+Assuming the optimal-scenario, the new data burden on full-node can be evaluated as 12MB. To avoid validation slowdown, let's assume the same proportion of op_energy new data set than the utxo set is kept in-memory (%4), thus op_energy in-memory cache default size would be 0.4 MB.
+
+From a validation engineering perspective, this sounds acceptable though it could be argued that even lightweighted, supplemental resources would be better allocated to growth of the utxo in-memory cache.
+
+This high-level reasoning should be backed up by an actual implementation of op_energy and perfomance simulation with some op_energy scripts payload to confirm its ground.
+
+Note, OP_ENERGY breaks the `bitcoinconsensus` library (`doc/shared-libraries.md`) usage as Bitcoin applications only eager to verify scripts validity might not have access to the integrality of chain state (e.g L2 protocols verifying counterparty scripts).
+
+Note, OP_ENERGY also breaks pruned clients which don't have access to historical chain data. To ease deployment of such proposal, op_energy block range might be lower bounded to height of softfork activation.
+
+### DoS Concerns
+
+Note, OP_ENERGY also breaks script cache validity across a reorg. Presently, OP_ENERGY is referring to block data (`chainWork`, `chainRevenue`). Those values aren't guaranteed to hold the same for competing blocks at the same height. As such script cache op_energy entries must be flushed out, increasing DoS surface around the validation engine.
+
+### Conclusions
+
+Considering the arguments, we feel that it would be challenging to persuade the community to integrate a combined opcode, although we are open to discussing arguments we might have been missed.
+
+We would like to suggest an alternative opcode design. Fortunately, it seems most of the work in the OP_ENERGY project would easily apply to the new design as well.
+
+## An alternative way to achieve OP_ENERGY functionality
+
+Considering those concerns, we would like to propose alternative softforks, aiming to match as close as we can op_energy semantic. We acknowledge two design principles :
+
+- minimize resources consumption on validating nodes
+- modularize op_energy expression to tighter script primitives
+
+Resource-minimization should avoid unbounded increases in the cost of operating a Bitcoin node. Higher cost of full-node operations are harming Bitcoin decentralization and thus its value proposition. Any softfork proposal calling for a higher validation burden is going to be contentious for the community.
+
+Notice that minimizing complexity at the base layer comes at the price of increased complexity of the contract client. We think this opinion is widespread among the community as Lightning as been favored as a scaling option compared to block size increase during the last years.
+
+Modularity offers at least 2 obvious benefits. Firstly, modularity let's you build new trustless hashrate derivatives applications beyond the ones envisioned by the op_energy project. Thus it increases the utility of the proposed softforks for the community and make them more compelling.
+
+The alternative softforks are organized in 4 bips :
+
+- op_checkchainworkverify
+- hashrate-lock
+- op_chainrewardverify
+- reward-lock
+
+They reuse the good design principles from CHECKLOCKTIMEVERIFY by splitting the lock opcode (`OP_CHECKCHAIN*VERIFY`) from the transaction field used as a locking constraint. 
+
+Those locking constraints are compared to consensus endpoints at block validation, thus minimizing the amount of work done by the script interpreter. Beyond, new validation rules at the block level are far less-disruptive than script interpreter changes.
+
+Transaction fields used as locking constraints are introduced in witnesses leveraging the Taproot new `annex` mechanism (see BIP341).
+
+An example of "hashes_per_satoshis" binary call contract is presented in bip hashrate-lock. More Bitcoin hashrate-lock applications are left to be detailed. 
+
+Finally, if those alternative bips high-level designs are deemed as sound enough, more precise semantic, examples and PoC implementation can be envisioned.
+
+Otherwise, we can pursue the work on an enhanced version of op_energy integrating challenges laid out above.
+
+---
+
+### Miscellaneous BIP comments:
+
+1. "For the purposes of this bip, an uneconomic transaction is a transaction whose primary purpose is other than to move bitcoin cheaply as the market will allow at the speed desired. Currently (I have no proof of this but seems likely), uneconomic transactions may being mined whose purpose is to manipulate transaction fees higher. In an OP_ENERGY world, uneconomic high-fee transactions could be made to manipulate OP_ENERGY lower."
+
+I don't understand how they may drag fees higher. Fees are decided by wallets on transaction signing. If the mempool is empty, fee is low.
+
+If uneconomic transactions are in the mempool, miners have a huge risk of paying fees to someone else. (or miners have to cooperate, which is indeed not the case)
+
+If miners don't reveal them to the network, the mempools will be not affected, and wallets will pay low fees.
+
+2. "But, nodes control relay, not miners. In today's world, most economically important nodes want lower fees. In an OP_ENERGY world, economically important nodes would want a fair and smoothly functioning OP_ENERGY market, as they are working as market makers and earning lightning transaction fees. So miners cannot self-mine uneconomic transactions with impunity. This is true today, and would continue to be true if OP_ENERGY went live."
+
+If you imply nodes will reject blocks which are perfectly valid but just have some suspicious fees, I highly doubt this. The beauty of Bitcoin is relying on the longest chain rule and it's sacred. Any agreements on top of it lead to Ethereum-style weak subjectivity.

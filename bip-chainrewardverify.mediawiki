@@ -1,0 +1,58 @@
+<pre>
+  BIP: XXX
+  Layer: Consensus (soft fork)
+  Title: OP_CHECKCHAINREWARDVERIFY
+  Author: 
+  Comments-Summary: No comments yet.
+  Comments-URI: https://github.com/bitcoin/bips/wiki/Comments:BIP-XXX
+  Status: Draft
+  Type: Standards Track
+  Created: 
+  License: CC0-1.0
+</pre>
+
+==Abstract==
+
+This BIP describes a new opcode (OP_CHECKCHAINREWARDVERIFY) for the Bitcoin scripting system that allows
+a transaction output to be made unspendable until a total amount of satoshi has been rewarded
+to miners.
+
+== Motivation ==
+
+TODO:
+
+=== Trustless Reward Bet ===
+
+    IF
+    	<chainReward + 3 months of reward> CHECKCHAINREWARDVERIFY DROP
+    	<Alice's pubkey> CHECKSIGVERIFY
+    ELSE
+    	<now + 3 months> CHECKLOCKTIMEVERIFY DROP
+    	<Bob's pubkey> CHECKSIGVERIFY
+    ENDIF
+
+== Specification ==
+
+TODO: integrate on top of taproot (bip341)
+
+CHECKCHAINREWARDVERIFY redefines the existing NOP5 opcode. When executed, if any of the following conditions
+are true, the script interpreter will terminate with an error :
+* the stack is empty; or
+* the top item on the stack is less than 0; or
+* the witness annex nChainReward field is empty; or
+* the chainwork type of the top stack item and the witness annex nChainReward field are not the same; or
+* the top stack item is greater than the transaction's nChainReward field
+
+Otherwise, script execution will continue as if a NOP had been executed.
+
+The witness annex nChainReward field in a transaction prevents the transaction from being mined until a 
+total amount of satoshis has been rewarded in the chain up to the block for which the spending
+transaction is candidate for inclusion. By comparing the argument to CHECKCHAINREWARDVERIFY against the
+witness annex nChainReward field, we indirectly verify that the desired total amount of work has been
+reached. Until a total amount of satoshi has been reward, the transaction output remains unspendable.
+
+== Rationale ==
+
+* should we signal finalty of the input ? nSequence=0xff_ff_ff_ff
+
+
